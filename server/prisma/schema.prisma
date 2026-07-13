@@ -1,0 +1,551 @@
+// Broszeit Communication Hub - Data Model
+// Central customer communication (WhatsApp-first, multi-channel) + AI assistant
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Core business entities (minimal, so the communication layer below has a
+// real foundation to attach to - customers, staff, properties, jobs).
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  OFFICE
+  FIELD_STAFF
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  role      UserRole @default(OFFICE)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assignedConversations Conversation[]     @relation("AssignedUser")
+  tasks                 Task[]
+  aiApprovals           AiSuggestion[]     @relation("ApprovedByUser")
+  auditLogs             AiUsageLog[]
+}
+
+enum CustomerStatus {
+  LEAD
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+model Customer {
+  id          String         @id @default(cuid())
+  firstName   String?
+  lastName    String?
+  companyName String?
+  phoneNumber String?        @unique
+  email       String?
+  street      String?
+  postalCode  String?
+  city        String?
+  status      CustomerStatus @default(LEAD)
+  source      String? // e.g. "whatsapp", "email", "manual"
+  notes       String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  properties     Property[]
+  inquiries      Inquiry[]
+  appointments   Appointment[]
+  quotes         Quote[]
+  invoices       Invoice[]
+  tasks          Task[]
+  conversations  Conversation[]
+  consent        CommunicationConsent?
+  customerDrafts CustomerDraft[]
+}
+
+// A pending, AI-suggested or partially-confirmed set of customer data that
+// must be reviewed by a human before it becomes/updates a real Customer.
+enum DraftStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+}
+
+model CustomerDraft {
+  id                String      @id @default(cuid())
+  customerId        String? // set once linked to an existing customer, null if brand new
+  customer          Customer?   @relation(fields: [customerId], references: [id])
+  conversationId    String?
+  conversation      Conversation? @relation(fields: [conversationId], references: [id])
+  sourceMessageId   String?
+  extractedData     Json // { firstName, lastName, phoneNumber, email, street, city, desiredService, desiredDate, propertySizeEstimate, careType, specialRequests, ... }
+  confidence        Json? // per-field confidence scores from the AI extraction
+  status            DraftStatus @default(PENDING)
+  reviewedByUserId  String?
+  reviewedAt        DateTime?
+  createdAt         DateTime    @default(now())
+}
+
+model Property {
+  id                String   @id @default(cuid())
+  customerId        String
+  customer          Customer @relation(fields: [customerId], references: [id])
+  label             String? // e.g. "Hauptgrundstück"
+  street            String?
+  postalCode        String?
+  city              String?
+  estimatedSizeSqm  Int?
+  notes             String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  media     MediaAsset[]
+  quotes    Quote[]
+  invoices  Invoice[]
+  inquiries Inquiry[]
+}
+
+enum CareType {
+  ONE_TIME
+  RECURRING
+}
+
+enum InquiryStatus {
+  NEW
+  QUALIFYING
+  QUOTE_PENDING
+  QUOTE_SENT
+  WON
+  LOST
+}
+
+model Inquiry {
+  id               String        @id @default(cuid())
+  customerId       String
+  customer         Customer      @relation(fields: [customerId], references: [id])
+  propertyId       String?
+  property         Property?     @relation(fields: [propertyId], references: [id])
+  desiredService   String?
+  desiredDate      DateTime?
+  careType         CareType?
+  status           InquiryStatus @default(NEW)
+  originConversationId String?
+  originConversation   Conversation? @relation(fields: [originConversationId], references: [id])
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  quotes Quote[]
+}
+
+enum TaskType {
+  CALLBACK
+  SITE_VISIT
+  FOLLOW_UP
+  GENERIC
+}
+
+enum TaskStatus {
+  OPEN
+  DONE
+  CANCELLED
+}
+
+model Task {
+  id          String     @id @default(cuid())
+  customerId  String?
+  customer    Customer?  @relation(fields: [customerId], references: [id])
+  assignedToUserId String?
+  assignedTo  User?      @relation(fields: [assignedToUserId], references: [id])
+  type        TaskType   @default(GENERIC)
+  title       String
+  dueAt       DateTime?
+  status      TaskStatus @default(OPEN)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+enum AppointmentStatus {
+  PROPOSED
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+model Appointment {
+  id         String            @id @default(cuid())
+  customerId String
+  customer   Customer          @relation(fields: [customerId], references: [id])
+  title      String
+  startsAt   DateTime
+  endsAt     DateTime?
+  status     AppointmentStatus @default(PROPOSED)
+  location   String?
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+}
+
+enum QuoteStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+model Quote {
+  id         String      @id @default(cuid())
+  customerId String
+  customer   Customer    @relation(fields: [customerId], references: [id])
+  inquiryId  String?
+  inquiry    Inquiry?    @relation(fields: [inquiryId], references: [id])
+  propertyId String?
+  property   Property?   @relation(fields: [propertyId], references: [id])
+  quoteNumber String     @unique
+  status     QuoteStatus @default(DRAFT)
+  currency   String      @default("EUR")
+  totalNet   Decimal?    @db.Decimal(10, 2)
+  totalGross Decimal?    @db.Decimal(10, 2)
+  pdfUrl     String?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  items QuoteItem[]
+}
+
+model QuoteItem {
+  id          String  @id @default(cuid())
+  quoteId     String
+  quote       Quote   @relation(fields: [quoteId], references: [id])
+  description String
+  quantity    Decimal @db.Decimal(10, 2)
+  unit        String  @default("Stk.")
+  unitPrice   Decimal @db.Decimal(10, 2)
+  position    Int     @default(0)
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+model Invoice {
+  id            String        @id @default(cuid())
+  customerId    String
+  customer      Customer      @relation(fields: [customerId], references: [id])
+  propertyId    String?
+  property      Property?     @relation(fields: [propertyId], references: [id])
+  invoiceNumber String        @unique
+  status        InvoiceStatus @default(DRAFT)
+  currency      String        @default("EUR")
+  totalGross    Decimal?      @db.Decimal(10, 2)
+  dueDate       DateTime?
+  pdfUrl        String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+enum MediaCategory {
+  PROPERTY_OVERVIEW
+  LAWN
+  HEDGE
+  BED
+  DRIVEWAY
+  PROBLEM_AREA
+  BEFORE
+  DAMAGE
+  OTHER
+}
+
+model MediaAsset {
+  id              String         @id @default(cuid())
+  propertyId      String?
+  property        Property?      @relation(fields: [propertyId], references: [id])
+  messageId       String?        @unique
+  message         Message?       @relation(fields: [messageId], references: [id])
+  category        MediaCategory?
+  storageUrl      String
+  mimeType        String?
+  aiDescription   String? // optional AI-generated description, always non-binding
+  aiDescriptionIsEstimate Boolean @default(true)
+  createdAt       DateTime       @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Communication layer
+// ---------------------------------------------------------------------------
+
+enum Channel {
+  WHATSAPP
+  EMAIL
+  PHONE_NOTE
+  SMS
+  INTERNAL
+  CUSTOMER_PORTAL
+}
+
+enum ConversationStatus {
+  OPEN
+  PENDING
+  ARCHIVED
+}
+
+model Conversation {
+  id                     String             @id @default(cuid())
+  customerId             String?
+  customer               Customer?          @relation(fields: [customerId], references: [id])
+  channel                Channel            @default(WHATSAPP)
+  externalConversationId String? // e.g. WhatsApp wa_id thread anchor
+  phoneNumber            String?
+  status                 ConversationStatus @default(OPEN)
+  assignedUserId         String?
+  assignedUser           User?              @relation("AssignedUser", fields: [assignedUserId], references: [id])
+  lastMessageAt          DateTime?
+  unreadCount            Int                @default(0)
+  urgency                Int                @default(0) // 0 normal .. 2 urgent, set manually or via AI suggestion
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  messages       Message[]
+  customerDrafts CustomerDraft[]
+  inquiries      Inquiry[]
+
+  @@index([customerId])
+  @@index([status])
+  @@unique([channel, externalConversationId])
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  DOCUMENT
+  AUDIO
+  LOCATION
+  TEMPLATE
+  QUOTE_PDF
+  INVOICE_PDF
+  SYSTEM_NOTE
+  INTERNAL_NOTE
+}
+
+enum DeliveryStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+model Message {
+  id                String           @id @default(cuid())
+  conversationId    String
+  conversation      Conversation     @relation(fields: [conversationId], references: [id])
+  direction         MessageDirection
+  sender            String? // phone number, user id, or "system"
+  recipient         String?
+  messageType       MessageType      @default(TEXT)
+  text              String?
+  mediaUrl          String?
+  externalMessageId String?          @unique // WhatsApp wamid, for idempotency
+  replyToMessageId  String?
+  replyToMessage    Message?         @relation("MessageReply", fields: [replyToMessageId], references: [id])
+  replies           Message[]        @relation("MessageReply")
+  deliveryStatus    DeliveryStatus   @default(PENDING)
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  readAt            DateTime?
+  failedAt          DateTime?
+  errorMessage      String?
+  isAiGenerated     Boolean          @default(false)
+  aiApprovedByUser  Boolean          @default(false)
+  isInternalNote    Boolean          @default(false)
+  createdByUserId   String?
+  createdAt         DateTime         @default(now())
+
+  media           MediaAsset?
+  aiSuggestions   AiSuggestion[]
+  voiceTranscript VoiceTranscript?
+
+  @@index([conversationId])
+  @@index([externalMessageId])
+}
+
+model VoiceTranscript {
+  id               String   @id @default(cuid())
+  messageId        String   @unique
+  message          Message  @relation(fields: [messageId], references: [id])
+  transcriptText   String
+  isAutoGenerated  Boolean  @default(true)
+  correctedByUser  Boolean  @default(false)
+  summary          String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+enum TemplateApprovalStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  REJECTED
+  DISABLED
+}
+
+model MessageTemplate {
+  id                 String                  @id @default(cuid())
+  channel             Channel                @default(WHATSAPP)
+  internalName        String
+  externalTemplateName String? // name registered with Meta
+  language             String                 @default("de")
+  category             String? // MARKETING | UTILITY | AUTHENTICATION (Meta categories)
+  content              String
+  variables            Json? // list of variable placeholders, e.g. ["customer_name", "appointment_date"]
+  approvalStatus       TemplateApprovalStatus @default(DRAFT)
+  active               Boolean                @default(true)
+  lastSyncedAt         DateTime?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+
+  @@unique([channel, internalName])
+}
+
+enum AiSuggestionType {
+  REPLY_SHORT
+  REPLY_FRIENDLY
+  REPLY_PROFESSIONAL
+  SUMMARY
+  APPOINTMENT_PROPOSAL
+  QUOTE_ANNOUNCEMENT
+  PAYMENT_REMINDER
+  REVIEW_REQUEST
+  TASK_LIST
+  CUSTOM
+}
+
+enum AiSuggestionStatus {
+  PENDING
+  EDITED
+  APPROVED
+  SENT
+  DISCARDED
+}
+
+model AiSuggestion {
+  id               String             @id @default(cuid())
+  messageId        String?
+  message          Message?           @relation(fields: [messageId], references: [id])
+  conversationId   String?
+  suggestionType   AiSuggestionType   @default(CUSTOM)
+  generatedText    String
+  model            String
+  status           AiSuggestionStatus @default(PENDING)
+  editedText       String?
+  approvedByUserId String?
+  approvedByUser   User?              @relation("ApprovedByUser", fields: [approvedByUserId], references: [id])
+  createdAt        DateTime           @default(now())
+}
+
+model CommunicationConsent {
+  id                    String    @id @default(cuid())
+  customerId            String    @unique
+  customer              Customer  @relation(fields: [customerId], references: [id])
+  whatsappAllowed       Boolean   @default(true)
+  emailAllowed          Boolean   @default(true)
+  phoneAllowed          Boolean   @default(true)
+  aiProcessingAllowed   Boolean   @default(true)
+  imageProcessingAllowed Boolean  @default(true)
+  grantedAt             DateTime  @default(now())
+  revokedAt             DateTime?
+  source                String? // e.g. "whatsapp_opt_in", "manual", "contract"
+}
+
+enum WebhookProvider {
+  WHATSAPP
+  OPENAI
+}
+
+enum WebhookProcessingStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+  IGNORED_DUPLICATE
+}
+
+model WebhookEvent {
+  id                String                   @id @default(cuid())
+  provider          WebhookProvider
+  externalEventId   String? // dedupe key when the provider supplies one
+  eventType         String?
+  payload           Json // minimized: secrets stripped, media replaced by reference ids
+  processingStatus  WebhookProcessingStatus  @default(RECEIVED)
+  errorMessage      String?
+  receivedAt        DateTime                 @default(now())
+  processedAt       DateTime?
+
+  @@unique([provider, externalEventId])
+  @@index([processingStatus])
+}
+
+// Background job queue (simple DB-backed queue; swappable for Redis/BullMQ later)
+enum JobStatus {
+  QUEUED
+  RUNNING
+  DONE
+  FAILED
+}
+
+model Job {
+  id           String    @id @default(cuid())
+  type         String // e.g. "whatsapp.send", "webhook.process"
+  payload      Json
+  status       JobStatus @default(QUEUED)
+  attempts     Int       @default(0)
+  maxAttempts  Int       @default(5)
+  lastError    String?
+  runAfter     DateTime  @default(now())
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([status, runAfter])
+}
+
+// Simple key/value application settings: default first-contact dialog text,
+// automation level, etc. Editable via the Settings screen.
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+enum AutomationLevel {
+  SUGGESTIONS_ONLY // Stufe 1
+  STANDARD_AUTO_REPLIES // Stufe 2
+  ADVANCED // Stufe 3
+}
+
+// Audit log: which AI/automation feature was used, when, by whom, on what.
+model AiUsageLog {
+  id           String   @id @default(cuid())
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id])
+  feature      String // e.g. "reply_suggestion", "assistant_tool_call", "voice_transcription"
+  targetType   String? // "conversation" | "message" | "customer" ...
+  targetId     String?
+  dataSentSummary String? // short description of what was sent to the AI provider, NOT the raw payload
+  model        String?
+  createdAt    DateTime @default(now())
+}
