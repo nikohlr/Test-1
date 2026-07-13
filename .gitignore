@@ -10,3 +10,4 @@ server/generated/
 server/storage/
 coverage/
 .turbo/
+*.tsbuildinfo
