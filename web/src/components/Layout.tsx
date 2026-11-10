@@ -41,6 +41,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : "")}>
             Einstellungen
           </NavLink>
+          <NavLink to="/terminal">Agenten-Terminal ❯</NavLink>
         </nav>
         <div className="user-switcher">
           <select

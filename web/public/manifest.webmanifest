@@ -1,0 +1,13 @@
+{
+  "name": "Agenten-Terminal",
+  "short_name": "Agenten",
+  "description": "Samantha und dein Agenten-Team live im Blick",
+  "start_url": "/terminal",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#07090c",
+  "theme_color": "#07090c",
+  "icons": [
+    { "src": "/terminal-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
