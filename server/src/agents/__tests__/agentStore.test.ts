@@ -2,51 +2,79 @@ import { describe, expect, it } from "vitest";
 import { AgentStore } from "../agentStore";
 import type { AgentEvent } from "../types";
 
-function storeWithAgent() {
+function setup() {
   const store = new AgentStore(null);
-  store.upsertAgent({ id: "samantha", name: "Samantha", isLead: true, status: "working" });
-  return store;
+  store.upsertAgent({ id: "max", name: "Max" });
+  const task = store.createTask("max", "Erstelle zwei Entwürfe für eine Insta-Story");
+  return { store, task };
 }
 
-describe("AgentStore", () => {
-  it("marks an agent as waiting while it has an open question", () => {
-    const store = storeWithAgent();
-    store.askQuestion("samantha", "Angebot heute senden?", ["Ja", "Nein"]);
-    expect(store.getAgent("samantha")!.status).toBe("waiting");
-    // A status update from the agent must not hide the open question.
-    store.setStatus("samantha", "working", "etwas anderes");
-    expect(store.getAgent("samantha")!.status).toBe("waiting");
+describe("AgentStore tasks", () => {
+  it("creates a running task and marks the agent as working", () => {
+    const { store, task } = setup();
+    expect(task.status).toBe("running");
+    expect(task.title).toBe("Erstelle zwei Entwürfe für eine Insta-Story");
+    expect(store.getAgent("max")!.status).toBe("working");
   });
 
-  it("returns to working once all questions are answered", () => {
-    const store = storeWithAgent();
-    const q1 = store.askQuestion("samantha", "Frage 1");
-    const q2 = store.askQuestion("samantha", "Frage 2");
-    store.answerQuestion(q1.id, "Ja");
-    expect(store.getAgent("samantha")!.status).toBe("waiting");
-    store.answerQuestion(q2.id, "Nein");
-    expect(store.getAgent("samantha")!.status).toBe("working");
+  it("keeps task and agent waiting while a question is open", () => {
+    const { store, task } = setup();
+    const q = store.askQuestion(task.id, "Musik dezent?", ["Ja", "Nein"]);
+    expect(store.getTask(task.id)!.status).toBe("waiting");
+    expect(store.getAgent("max")!.status).toBe("waiting");
+    store.updateTask(task.id, { status: "running" }); // agent reports progress meanwhile
+    expect(store.getTask(task.id)!.status).toBe("waiting");
+    store.answerQuestion(q.id, "Ja");
+    expect(store.getTask(task.id)!.status).toBe("running");
+    expect(store.getAgent("max")!.status).toBe("working");
+  });
+
+  it("counts steps and clears the step when done", () => {
+    const { store, task } = setup();
+    store.updateTask(task.id, { step: "liest kontakt_b.jpg" });
+    store.updateTask(task.id, { step: "schneidet Fassung A" });
+    expect(store.getTask(task.id)!.stepCount).toBe(2);
+    store.updateTask(task.id, { status: "done" });
+    const done = store.getTask(task.id)!;
+    expect(done.currentStep).toBeNull();
+    expect(done.finishedAt).not.toBeNull();
+    expect(store.getAgent("max")!.status).toBe("idle");
+  });
+
+  it("closes open questions when a task is stopped", () => {
+    const { store, task } = setup();
+    store.askQuestion(task.id, "Weiter?");
+    store.updateTask(task.id, { status: "stopped" });
     expect(store.openQuestions()).toHaveLength(0);
   });
 
+  it("appends streamed progress to the agent's last message", () => {
+    const { store, task } = setup();
+    store.addMessage(task.id, "agent", "Ich sammle Material.", { append: true });
+    store.addMessage(task.id, "agent", "Jetzt schneide ich.", { append: true });
+    const msgs = store.listMessages(task.id);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].text).toBe("Ich sammle Material. Jetzt schneide ich.");
+  });
+
   it("rejects answering the same question twice", () => {
-    const store = storeWithAgent();
-    const q = store.askQuestion("samantha", "Frage");
+    const { store, task } = setup();
+    const q = store.askQuestion(task.id, "Frage");
     store.answerQuestion(q.id, "Ja");
     expect(() => store.answerQuestion(q.id, "Nein")).toThrow(/bereits/);
   });
 
-  it("emits live events for every connected terminal", () => {
-    const store = storeWithAgent();
+  it("emits live events", () => {
+    const { store, task } = setup();
     const events: AgentEvent[] = [];
     store.on("event", (e) => events.push(e));
-    store.addMessage("samantha", "user", "Hallo");
-    store.addActivity("samantha", "Plant den Tag");
-    expect(events.map((e) => e.type)).toEqual(["message", "activity"]);
+    store.addMessage(task.id, "user", "Hallo");
+    expect(events.map((e) => e.type)).toContain("message");
   });
 
-  it("refuses events for unknown agents", () => {
+  it("refuses unknown agents and tasks", () => {
     const store = new AgentStore(null);
-    expect(() => store.addMessage("nobody", "user", "x")).toThrow(/nicht gefunden/);
+    expect(() => store.createTask("nobody", "x")).toThrow(/nicht gefunden/);
+    expect(() => store.addMessage("nope", "user", "x")).toThrow(/nicht gefunden/);
   });
 });

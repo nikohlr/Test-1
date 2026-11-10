@@ -2,29 +2,35 @@ import { EventEmitter } from "events";
 import fs from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
-import type { ActivityEntry, Agent, AgentEvent, AgentMessage, AgentQuestion, AgentStatus } from "./types";
+import type { Agent, AgentEvent, AgentMessage, AgentQuestion, AgentTask, TaskStatus } from "./types";
 
-const MAX_MESSAGES_PER_AGENT = 300;
-const MAX_ACTIVITY = 200;
+const MAX_TASKS = 300;
+const MAX_MESSAGES_PER_TASK = 200;
 
 interface PersistedState {
   agents: Agent[];
+  tasks: AgentTask[];
   messages: AgentMessage[];
   questions: AgentQuestion[];
-  activity: ActivityEntry[];
 }
 
+const now = () => new Date().toISOString();
+const shorten = (text: string, max = 80) => {
+  const line = text.trim().split("\n")[0];
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+};
+
 /**
- * Small in-memory store with optional JSON persistence. Every mutation emits an
- * AgentEvent so all connected terminals update instantly. Kept separate from
- * Prisma on purpose: agent state is high-frequency, short-lived telemetry and
- * can be moved to the database later without touching routes or UI.
+ * In-memory store with JSON persistence. Every mutation emits an AgentEvent so
+ * all connected terminals update instantly. Kept separate from Prisma on
+ * purpose: this is high-frequency agent telemetry that can move to the DB later
+ * without touching routes or UI.
  */
 export class AgentStore extends EventEmitter {
   private agents = new Map<string, Agent>();
+  private tasks: AgentTask[] = [];
   private messages: AgentMessage[] = [];
   private questions: AgentQuestion[] = [];
-  private activity: ActivityEntry[] = [];
   private saveTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly persistFile: string | null = null) {
@@ -43,25 +49,31 @@ export class AgentStore extends EventEmitter {
     return this.agents.get(id);
   }
 
-  listMessages(agentId: string): AgentMessage[] {
-    return this.messages.filter((m) => m.agentId === agentId);
+  listTasks(includeArchived = false): AgentTask[] {
+    return this.tasks.filter((t) => includeArchived || !t.archived);
+  }
+
+  getTask(id: string): AgentTask | undefined {
+    return this.tasks.find((t) => t.id === id);
+  }
+
+  listMessages(taskId: string): AgentMessage[] {
+    return this.messages.filter((m) => m.taskId === taskId);
   }
 
   listQuestions(): AgentQuestion[] {
     return [...this.questions];
   }
 
-  openQuestions(agentId?: string): AgentQuestion[] {
-    return this.questions.filter((q) => q.status === "open" && (!agentId || q.agentId === agentId));
+  openQuestions(filter: { agentId?: string; taskId?: string } = {}): AgentQuestion[] {
+    return this.questions.filter(
+      (q) => q.status === "open" && (!filter.agentId || q.agentId === filter.agentId) && (!filter.taskId || q.taskId === filter.taskId)
+    );
   }
 
-  listActivity(): ActivityEntry[] {
-    return [...this.activity];
-  }
+  // --- agents --------------------------------------------------------------
 
-  // --- writes --------------------------------------------------------------
-
-  upsertAgent(input: Partial<Agent> & { id: string; name?: string }): Agent {
+  upsertAgent(input: Partial<Agent> & { id: string }): Agent {
     const existing = this.agents.get(input.id);
     const agent: Agent = {
       id: input.id,
@@ -70,12 +82,12 @@ export class AgentStore extends EventEmitter {
       isLead: input.isLead ?? existing?.isLead ?? false,
       status: input.status ?? existing?.status ?? "idle",
       currentTask: input.currentTask !== undefined ? input.currentTask : existing?.currentTask ?? null,
-      progress: input.progress !== undefined ? input.progress : existing?.progress ?? null,
       webhookUrl: input.webhookUrl !== undefined ? input.webhookUrl : existing?.webhookUrl ?? null,
-      lastActivityAt: new Date().toISOString(),
+      avatarUrl: input.avatarUrl !== undefined ? input.avatarUrl : existing?.avatarUrl ?? null,
+      lastActivityAt: now(),
     };
-    // An agent with an open question is always "waiting" (red glow) until it is answered.
-    if (this.openQuestions(agent.id).length > 0 && agent.status !== "error") agent.status = "waiting";
+    // An agent with an open question is always "waiting" until it is answered.
+    if (this.openQuestions({ agentId: agent.id }).length > 0 && agent.status !== "error") agent.status = "waiting";
     this.agents.set(agent.id, agent);
     this.emitEvent({ type: "agent", agent });
     return agent;
@@ -83,56 +95,121 @@ export class AgentStore extends EventEmitter {
 
   removeAgent(id: string) {
     if (!this.agents.delete(id)) return;
+    this.tasks = this.tasks.filter((t) => t.agentId !== id);
     this.messages = this.messages.filter((m) => m.agentId !== id);
     this.questions = this.questions.filter((q) => q.agentId !== id);
     this.emitEvent({ type: "agentRemoved", agentId: id });
   }
 
-  setStatus(agentId: string, status: AgentStatus, currentTask?: string | null, progress?: number | null) {
+  setAgentStatus(agentId: string, status: Agent["status"], currentTask?: string | null) {
     this.requireAgent(agentId);
-    return this.upsertAgent({ id: agentId, status, currentTask, progress });
+    return this.upsertAgent({ id: agentId, status, currentTask });
   }
 
-  addMessage(agentId: string, from: AgentMessage["from"], text: string, questionId?: string): AgentMessage {
+  // --- tasks ---------------------------------------------------------------
+
+  createTask(agentId: string, instruction: string, opts: { id?: string; title?: string } = {}): AgentTask {
     this.requireAgent(agentId);
-    const message: AgentMessage = { id: randomUUID(), agentId, from, text, createdAt: new Date().toISOString(), questionId };
-    this.messages.push(message);
-    const forAgent = this.messages.filter((m) => m.agentId === agentId);
-    if (forAgent.length > MAX_MESSAGES_PER_AGENT) {
-      const drop = new Set(forAgent.slice(0, forAgent.length - MAX_MESSAGES_PER_AGENT).map((m) => m.id));
-      this.messages = this.messages.filter((m) => !drop.has(m.id));
+    const task: AgentTask = {
+      id: opts.id ?? randomUUID(),
+      agentId,
+      title: opts.title?.trim() || shorten(instruction, 70),
+      instruction,
+      status: "running",
+      stepCount: 0,
+      currentStep: null,
+      archived: false,
+      createdAt: now(),
+      updatedAt: now(),
+      finishedAt: null,
+    };
+    this.tasks.push(task);
+    if (this.tasks.length > MAX_TASKS) this.dropOldestFinishedTask();
+    this.emitEvent({ type: "task", task });
+    this.syncAgentFromTasks(agentId);
+    return task;
+  }
+
+  updateTask(taskId: string, patch: { title?: string; status?: TaskStatus; step?: string; archived?: boolean }): AgentTask {
+    const task = this.requireTask(taskId);
+    if (patch.title) task.title = patch.title;
+    if (patch.archived !== undefined) task.archived = patch.archived;
+    if (patch.step) {
+      task.stepCount += 1;
+      task.currentStep = patch.step;
     }
-    this.touch(agentId);
+    if (patch.status) {
+      let status = patch.status;
+      // Open questions keep the task "waiting" unless it is explicitly ended.
+      if (status === "running" && this.openQuestions({ taskId }).length > 0) status = "waiting";
+      task.status = status;
+      const finished = status === "done" || status === "stopped" || status === "failed";
+      task.finishedAt = finished ? task.finishedAt ?? now() : null;
+      if (finished) {
+        task.currentStep = null;
+        // A finished task cannot wait for an answer anymore.
+        for (const q of this.openQuestions({ taskId })) {
+          q.status = "answered";
+          q.answer = null;
+          q.answeredAt = now();
+          this.emitEvent({ type: "question", question: q });
+        }
+      }
+    }
+    task.updatedAt = now();
+    this.emitEvent({ type: "task", task });
+    this.syncAgentFromTasks(task.agentId);
+    return task;
+  }
+
+  /** Most recent unfinished task of an agent, used when an agent reports without a taskId. */
+  latestActiveTask(agentId: string): AgentTask | undefined {
+    return [...this.tasks].reverse().find((t) => t.agentId === agentId && (t.status === "running" || t.status === "waiting"));
+  }
+
+  // --- messages & questions ----------------------------------------------
+
+  addMessage(taskId: string, from: AgentMessage["from"], text: string, opts: { questionId?: string; append?: boolean } = {}): AgentMessage {
+    const task = this.requireTask(taskId);
+    const forTask = this.messages.filter((m) => m.taskId === taskId);
+    const last = forTask[forTask.length - 1];
+
+    // Streaming progress: glue text onto the agent's last message instead of creating a new bubble.
+    if (opts.append && last && last.from === from && from === "agent" && !last.questionId) {
+      last.text = `${last.text}${/[\s\n]$/.test(last.text) ? "" : " "}${text}`;
+      this.touchTask(task);
+      this.emitEvent({ type: "message", message: last });
+      return last;
+    }
+
+    const message: AgentMessage = { id: randomUUID(), agentId: task.agentId, taskId, from, text, createdAt: now(), questionId: opts.questionId };
+    this.messages.push(message);
+    if (forTask.length + 1 > MAX_MESSAGES_PER_TASK) {
+      const dropId = forTask[0].id;
+      this.messages = this.messages.filter((m) => m.id !== dropId);
+    }
+    this.touchTask(task);
     this.emitEvent({ type: "message", message });
     return message;
   }
 
-  addActivity(agentId: string, text: string, level: ActivityEntry["level"] = "info"): ActivityEntry {
-    this.requireAgent(agentId);
-    const entry: ActivityEntry = { id: randomUUID(), agentId, text, level, createdAt: new Date().toISOString() };
-    this.activity.push(entry);
-    if (this.activity.length > MAX_ACTIVITY) this.activity = this.activity.slice(-MAX_ACTIVITY);
-    this.touch(agentId);
-    this.emitEvent({ type: "activity", entry });
-    return entry;
-  }
-
-  askQuestion(agentId: string, text: string, options: string[] = []): AgentQuestion {
-    this.requireAgent(agentId);
+  askQuestion(taskId: string, text: string, options: string[] = []): AgentQuestion {
+    const task = this.requireTask(taskId);
     const question: AgentQuestion = {
       id: randomUUID(),
-      agentId,
+      agentId: task.agentId,
+      taskId,
       text,
       options,
       status: "open",
       answer: null,
-      createdAt: new Date().toISOString(),
+      createdAt: now(),
       answeredAt: null,
     };
     this.questions.push(question);
     this.emitEvent({ type: "question", question });
-    this.addMessage(agentId, "agent", text, question.id);
-    this.upsertAgent({ id: agentId, status: "waiting" });
+    this.addMessage(taskId, "agent", text, { questionId: question.id });
+    this.updateTask(taskId, { status: "waiting" });
     return question;
   }
 
@@ -142,17 +219,34 @@ export class AgentStore extends EventEmitter {
     if (question.status === "answered") throw new AgentStoreError(409, "Frage wurde bereits beantwortet");
     question.status = "answered";
     question.answer = answer;
-    question.answeredAt = new Date().toISOString();
+    question.answeredAt = now();
     this.emitEvent({ type: "question", question });
-    this.addMessage(question.agentId, "user", answer, question.id);
-    if (this.openQuestions(question.agentId).length === 0) {
-      const agent = this.requireAgent(question.agentId);
-      if (agent.status === "waiting") this.upsertAgent({ id: agent.id, status: "working" });
+    this.addMessage(question.taskId, "user", answer, { questionId: question.id });
+    if (this.openQuestions({ taskId: question.taskId }).length === 0) {
+      this.updateTask(question.taskId, { status: "running" });
     }
     return question;
   }
 
   // --- internals -----------------------------------------------------------
+
+  private syncAgentFromTasks(agentId: string) {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent.status === "offline" || agent.status === "error") return;
+    const active = this.tasks.filter((t) => t.agentId === agentId && (t.status === "running" || t.status === "waiting"));
+    const waiting = active.some((t) => t.status === "waiting");
+    const status = waiting ? "waiting" : active.length ? "working" : "idle";
+    const currentTask = active.length ? active[active.length - 1].title : null;
+    if (agent.status !== status || agent.currentTask !== currentTask) this.upsertAgent({ id: agentId, status, currentTask });
+  }
+
+  private dropOldestFinishedTask() {
+    const victim = this.tasks.find((t) => t.status !== "running" && t.status !== "waiting");
+    if (!victim) return;
+    this.tasks = this.tasks.filter((t) => t.id !== victim.id);
+    this.messages = this.messages.filter((m) => m.taskId !== victim.id);
+    this.questions = this.questions.filter((q) => q.taskId !== victim.id);
+  }
 
   private requireAgent(id: string): Agent {
     const agent = this.agents.get(id);
@@ -160,9 +254,16 @@ export class AgentStore extends EventEmitter {
     return agent;
   }
 
-  private touch(agentId: string) {
-    const agent = this.agents.get(agentId);
-    if (agent) agent.lastActivityAt = new Date().toISOString();
+  private requireTask(id: string): AgentTask {
+    const task = this.getTask(id);
+    if (!task) throw new AgentStoreError(404, "Auftrag nicht gefunden");
+    return task;
+  }
+
+  private touchTask(task: AgentTask) {
+    task.updatedAt = now();
+    const agent = this.agents.get(task.agentId);
+    if (agent) agent.lastActivityAt = task.updatedAt;
   }
 
   private emitEvent(event: AgentEvent) {
@@ -174,12 +275,12 @@ export class AgentStore extends EventEmitter {
     if (!this.persistFile || !fs.existsSync(this.persistFile)) return;
     try {
       const state = JSON.parse(fs.readFileSync(this.persistFile, "utf8")) as PersistedState;
-      state.agents.forEach((a) => this.agents.set(a.id, a));
-      this.messages = state.messages ?? [];
-      this.questions = state.questions ?? [];
-      this.activity = state.activity ?? [];
+      (state.agents ?? []).forEach((a) => this.agents.set(a.id, a));
+      this.tasks = state.tasks ?? [];
+      this.messages = (state.messages ?? []).filter((m) => m.taskId);
+      this.questions = (state.questions ?? []).filter((q) => q.taskId);
     } catch {
-      // Corrupt state file: start fresh rather than refusing to boot.
+      // Corrupt or outdated state file: start fresh rather than refusing to boot.
     }
   }
 
@@ -189,9 +290,9 @@ export class AgentStore extends EventEmitter {
       this.saveTimer = null;
       const state: PersistedState = {
         agents: [...this.agents.values()],
+        tasks: this.tasks,
         messages: this.messages,
         questions: this.questions,
-        activity: this.activity,
       };
       fs.mkdirSync(path.dirname(this.persistFile!), { recursive: true });
       fs.writeFile(this.persistFile!, JSON.stringify(state), () => undefined);

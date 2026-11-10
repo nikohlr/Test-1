@@ -13,70 +13,104 @@ export const DEMO_AGENTS: Seed[] = [
 ];
 
 const TASKS: Record<string, string[]> = {
-  samantha: ["Tagesplanung mit dem Team abstimmen", "Ergebnisse der Agenten prüfen", "Prioritäten für heute setzen"],
-  kundenservice: ["Antwort an Familie Weber vorbereiten", "3 neue WhatsApp-Anfragen sortieren", "Rückfrage zu Heckenschnitt klären"],
-  angebote: ["Angebot Rasenpflege Müller kalkulieren", "Preisliste 2027 abgleichen", "Angebot Baumfällung entwerfen"],
-  termine: ["Touren für Donnerstag optimieren", "Terminkonflikt Freitag auflösen", "Wetterprognose einplanen"],
-  recherche: ["Wettbewerberpreise Region recherchieren", "Fördermittel Gartenbau prüfen", "Lieferanten für Rindenmulch vergleichen"],
-  buchhaltung: ["Zahlungseingänge abgleichen", "Mahnung Rechnung #1043 vorbereiten", "Monatsabschluss vorbereiten"],
+  samantha: ["Wochenplanung mit dem Team abstimmen", "Ergebnisse der Agenten prüfen und zusammenfassen"],
+  kundenservice: ["Antworten auf die 3 neuen WhatsApp-Anfragen vorbereiten", "Rückfrage zum Heckenschnitt bei Familie Weber klären"],
+  angebote: ["Angebot Rasenpflege Müller kalkulieren", "Angebot Baumfällung Schneider entwerfen"],
+  termine: ["Touren für Donnerstag optimieren", "Terminkonflikt am Freitag auflösen"],
+  recherche: ["Wettbewerberpreise in der Region recherchieren", "Lieferanten für Rindenmulch vergleichen"],
+  buchhaltung: ["Zahlungseingänge vom Oktober abgleichen", "Mahnung für Rechnung #1043 vorbereiten"],
 };
 
-const STEPS = ["Daten geladen", "Kontext ausgewertet", "Entwurf erstellt", "Zwischenergebnis gespeichert", "Prüfung läuft", "Quellen abgeglichen"];
+const STEPS = ["liest kunden.csv", "öffnet WhatsApp-Verlauf", "liest angebot_vorlage.docx", "prüft Kalender", "sucht im Web", "liest kontakt_b.jpg", "schreibt Entwurf", "rechnet Positionen", "prüft Ergebnis"];
 
-const QUESTIONS: Record<string, { text: string; options: string[] }[]> = {
-  samantha: [{ text: "Soll ich das Angebot für Müller heute noch rausschicken oder bis morgen warten?", options: ["Heute senden", "Bis morgen warten"] }],
-  kundenservice: [{ text: "Frau Weber fragt nach einem Termin am Samstag. Bieten wir Samstagstermine an?", options: ["Ja, mit Aufschlag", "Nein", "Nur vormittags"] }],
-  angebote: [{ text: "Für die Baumfällung fehlt die Stammdicke. Pauschal mit 40 cm kalkulieren?", options: ["Ja, 40 cm", "Erst Kunden fragen"] }],
-  termine: [{ text: "Donnerstag ist Regen gemeldet. Rasentermine auf Freitag verschieben?", options: ["Verschieben", "So lassen"] }],
-  recherche: [],
-  buchhaltung: [{ text: "Rechnung #1043 ist 21 Tage überfällig. Erste Mahnung versenden?", options: ["Ja, versenden", "Noch 1 Woche warten"] }],
+const PROGRESS = [
+  "Ich sammle gerade die Unterlagen zusammen.",
+  "Die Daten sind da, jetzt werte ich sie aus.",
+  "Erster Entwurf steht, ich prüfe noch die Details.",
+  "Zwei Kleinigkeiten korrigiere ich noch.",
+  "Jetzt gleiche ich alles mit den bisherigen Absprachen ab.",
+];
+
+const QUESTIONS: Record<string, { text: string; options: string[] }> = {
+  samantha: { text: "Soll ich das Angebot für Müller heute noch rausschicken oder bis morgen warten?", options: ["Heute senden", "Bis morgen warten"] },
+  kundenservice: { text: "Frau Weber fragt nach einem Termin am Samstag. Bieten wir Samstagstermine an?", options: ["Ja, mit Aufschlag", "Nein", "Nur vormittags"] },
+  angebote: { text: "Für die Baumfällung fehlt die Stammdicke. Pauschal mit 40 cm kalkulieren?", options: ["Ja, 40 cm", "Erst Kunden fragen"] },
+  termine: { text: "Donnerstag ist Regen gemeldet. Rasentermine auf Freitag verschieben?", options: ["Verschieben", "So lassen"] },
+  buchhaltung: { text: "Rechnung #1043 ist 21 Tage überfällig. Erste Mahnung versenden?", options: ["Ja, versenden", "Noch 1 Woche warten"] },
 };
 
 const pick = <T>(list: T[]): T => list[Math.floor(Math.random() * list.length)];
 
-/** Seeds Samantha + team and keeps them "busy" so the terminal can be tried without real agents. */
-export function startDemoSimulation(store: AgentStore, intervalMs = 4000): () => void {
+interface SimState {
+  targetSteps: number;
+  asked: boolean;
+}
+
+/** Seeds Samantha + team and keeps their tasks moving so the terminal can be tried without real agents. */
+export function startDemoSimulation(store: AgentStore, intervalMs = 2500): () => void {
+  const sim = new Map<string, SimState>();
+  const isDemoAgent = (agentId: string) => {
+    const agent = store.getAgent(agentId);
+    return !!agent && !agent.webhookUrl;
+  };
+
   for (const seed of DEMO_AGENTS) {
-    if (!store.getAgent(seed.id)) {
-      store.upsertAgent({ ...seed, status: "working", currentTask: pick(TASKS[seed.id]), progress: Math.floor(Math.random() * 60) });
-      store.addMessage(seed.id, "agent", seed.isLead ? "Hallo Niko, das Team ist bereit. Schreib mir, was ansteht – ich verteile es." : `Bereit. Ich bin zuständig für: ${seed.role}.`);
-    }
-  }
-  // Start with one open question so the red glow is visible right away.
-  if (store.openQuestions().length === 0) {
-    const q = QUESTIONS.kundenservice[0];
-    store.askQuestion("kundenservice", q.text, q.options);
+    if (!store.getAgent(seed.id)) store.upsertAgent({ ...seed, status: "idle" });
   }
 
-  const timer = setInterval(() => {
-    const agents = store.listAgents().filter((a) => DEMO_AGENTS.some((d) => d.id === a.id));
-    if (agents.length === 0) return;
-    const agent = pick(agents);
-    if (agent.status === "waiting" || agent.status === "offline") return; // waits for you
+  if (store.listTasks().length === 0) {
+    // A finished task with a result, a waiting one (red) and a few running ones.
+    const done = store.createTask("angebote", "Bitte erstelle das Angebot für die Rasenpflege bei Familie Krüger (ca. 400 m², 14-tägig).");
+    store.updateTask(done.id, { step: "liest angebot_vorlage.docx" });
+    store.addMessage(done.id, "agent", "Das Angebot steht: 14-tägige Rasenpflege, 400 m², 89 € pro Einsatz netto. Der Entwurf liegt in den Angeboten zur Freigabe.");
+    store.updateTask(done.id, { status: "done" });
 
-    const roll = Math.random();
-    if (roll < 0.06 && QUESTIONS[agent.id]?.length && store.openQuestions().length < 3) {
-      const q = pick(QUESTIONS[agent.id]);
-      store.askQuestion(agent.id, q.text, q.options);
-      store.addActivity(agent.id, "Wartet auf deine Entscheidung", "warn");
-      return;
+    const waiting = store.createTask("kundenservice", "Beantworte die neue Anfrage von Frau Weber zum Heckenschnitt.");
+    store.addMessage(waiting.id, "agent", "Ich habe den Verlauf gelesen und eine Antwort vorbereitet.");
+    store.askQuestion(waiting.id, QUESTIONS.kundenservice.text, QUESTIONS.kundenservice.options);
+    sim.set(waiting.id, { targetSteps: 6, asked: true });
+
+    for (const agentId of ["samantha", "recherche", "termine"]) {
+      const task = store.createTask(agentId, pick(TASKS[agentId]));
+      store.updateTask(task.id, { step: pick(STEPS) });
+      store.addMessage(task.id, "agent", PROGRESS[0]);
     }
-    if (agent.status === "idle" || roll < 0.12) {
-      const task = pick(TASKS[agent.id] ?? ["Aufgabe bearbeiten"]);
-      store.setStatus(agent.id, "working", task, 0);
-      store.addActivity(agent.id, `Startet: ${task}`);
-      return;
+  }
+
+  const tick = () => {
+    const active = store.listTasks().filter((t) => t.status === "running" && isDemoAgent(t.agentId));
+
+    // Keep a few tasks going: Samantha "delegates" new work to idle agents.
+    if (active.length < 3 && Math.random() < 0.3) {
+      const idle = DEMO_AGENTS.filter((a) => store.getAgent(a.id)?.status === "idle");
+      if (idle.length) {
+        const agent = pick(idle);
+        store.createTask(agent.id, `${pick(TASKS[agent.id])} (von Samantha delegiert)`);
+      }
     }
-    const progress = Math.min(100, (agent.progress ?? 0) + 8 + Math.floor(Math.random() * 20));
-    if (progress >= 100) {
-      store.addActivity(agent.id, `Fertig: ${agent.currentTask ?? "Aufgabe"}`, "success");
-      store.setStatus(agent.id, "idle", null, null);
-      if (!agent.isLead) store.addActivity("samantha", `Ergebnis von ${agent.name} geprüft`);
-    } else {
-      store.setStatus(agent.id, "working", agent.currentTask, progress);
-      store.addActivity(agent.id, `${pick(STEPS)} (${progress} %)`);
+
+    for (const task of active) {
+      if (Math.random() < 0.45) continue;
+      const state = sim.get(task.id) ?? { targetSteps: 5 + Math.floor(Math.random() * 6), asked: false };
+      sim.set(task.id, state);
+
+      if (task.stepCount >= state.targetSteps) {
+        store.addMessage(task.id, "agent", "Fertig. Das Ergebnis liegt zur Prüfung bereit.");
+        store.updateTask(task.id, { status: "done" });
+        sim.delete(task.id);
+        continue;
+      }
+      if (!state.asked && QUESTIONS[task.agentId] && task.stepCount >= 2 && Math.random() < 0.12 && store.openQuestions().length < 3) {
+        state.asked = true;
+        store.askQuestion(task.id, QUESTIONS[task.agentId].text, QUESTIONS[task.agentId].options);
+        continue;
+      }
+      store.updateTask(task.id, { step: pick(STEPS) });
+      if (Math.random() < 0.6) store.addMessage(task.id, "agent", pick(PROGRESS), { append: true });
     }
-  }, intervalMs);
+  };
+
+  const timer = setInterval(tick, intervalMs);
   timer.unref?.();
   return () => clearInterval(timer);
 }

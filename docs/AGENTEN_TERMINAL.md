@@ -1,18 +1,18 @@
 # Agenten-Terminal (Samantha + Team)
 
-Vollbild-Terminal unter **`/terminal`**. Dort siehst du live, was Samantha und jeder einzelne Agent gerade macht, und kannst mit allen direkt chatten.
+Vollbild-Ansicht unter **`/terminal`**. Sie ist nach **Aufträgen** aufgebaut: Jeder Auftrag hat ein eigenes Panel. So siehst du am PC sofort, wo du gebraucht wirst, was gerade läuft und was erledigt ist.
 
-- **Kacheln pro Agent**: Status (arbeitet / bereit / wartet auf dich / Fehler / offline), aktuelle Aufgabe, Fortschritt, letzte Schritte
-- **Offene Frage** = pulsierende **rote Leuchtumrandung** + roter Balken oben + Zähler im Browser-Tab + optional eine System-Benachrichtigung
-- **Chat** rechts (auf dem Handy als Vollbild). Antwort-Buttons beantworten die Frage mit einem Klick. Getippter Text beantwortet die Frage, wenn genau eine offen ist.
-- **Tastatur**: `Alt+1…9` wählt einen Agenten, `F` springt zur nächsten offenen Frage, `Esc` schließt den Chat
-- **Live-Protokoll** unten über alle Agenten
-- **Mehrere Geräte**: Updates gehen per Server-Sent Events an alle offenen Terminals. Als App installierbar (PWA, „Zum Startbildschirm hinzufügen“)
+- **Team-Leiste oben**: alle Mitarbeiter mit Status (arbeitet / frei / braucht dich). Ein Klick öffnet einen neuen Auftrag an diesen Mitarbeiter, `N` öffnet einen Auftrag an Samantha.
+- **Filter**: Alle · **Braucht dich** · Läuft · Erledigt. Sortiert ist immer zuerst nach „braucht dich“, dann „läuft“, dann „erledigt“.
+- **Auftrags-Panel**: Auftragstext, live mitlaufender Arbeitsstand, Schrittleiste („Schritt 49 · liest kontakt_b.jpg · 20:20 min“), Eingabe für Ergänzungen, Buttons **Los** und **Stopp**. Mit ⤢ wird das Panel groß, mit × verschwindet ein erledigter Auftrag aus der Übersicht.
+- **Rückfrage**: Das Panel bekommt eine pulsierende **rote Leuchtumrandung**. Antwort-Buttons beantworten mit einem Klick, getippter Text geht auch. `F` springt zur nächsten offenen Frage. Die Zahl steht zusätzlich im Browser-Tab, optional kommt eine Benachrichtigung (🔔).
+- **Darstellung**: Hell / Nacht, Schriftgröße A− / A+ (wird pro Gerät gemerkt)
+- **Mehrere Geräte**: Updates gehen live per Server-Sent Events an alle offenen Terminals. Als App installierbar (PWA).
 
 ## Echte Agenten anbinden
 
 1. In `server/.env` `AGENTS_INBOUND_TOKEN` setzen. Damit endet der Demo-Modus.
-2. Deine Agenten (z. B. n8n-Workflows) melden sich mit einem HTTP-Request:
+2. Agenten melden sich mit **einem** HTTP-Request-Typ (z. B. ein HTTP-Node in n8n):
 
 ```
 POST /api/agents/inbound
@@ -20,20 +20,24 @@ Authorization: Bearer <AGENTS_INBOUND_TOKEN>
 Content-Type: application/json
 ```
 
-| `type`     | Felder                                                        | Wirkung |
-|------------|---------------------------------------------------------------|---------|
-| `register` | `agentId`, `name`, `role?`, `isLead?`, `webhookUrl?`          | Agent anlegen/aktualisieren |
-| `status`   | `agentId`, `status`, `currentTask?`, `progress?` (0–100)      | Kachel aktualisieren |
-| `activity` | `agentId`, `text`, `level?` (info/success/warn/error)         | Zeile im Protokoll |
-| `message`  | `agentId`, `text`                                             | Nachricht im Chat |
-| `question` | `agentId`, `text`, `options?` (max. 6)                        | Rote Markierung, bis du antwortest |
+| `type`     | Felder                                                                      | Wirkung |
+|------------|-----------------------------------------------------------------------------|---------|
+| `register` | `agentId`, `name`, `role?`, `isLead?`, `webhookUrl?`, `avatarUrl?`           | Mitarbeiter anlegen/aktualisieren |
+| `task`     | `agentId`, `taskId?`, `title?`, `instruction?`, `status?` (running/waiting/done/stopped/failed) | Auftrag anlegen oder Status setzen |
+| `step`     | `agentId`, `taskId?`, `text`                                                | Schrittzähler +1, aktueller Schritt („liest kontakt_b.jpg“) |
+| `progress` | `agentId`, `taskId?`, `text`                                                | Text an den laufenden Arbeitsstand anhängen |
+| `message`  | `agentId`, `taskId?`, `text`                                                | Neuer Absatz/Ergebnis im Panel |
+| `question` | `agentId`, `taskId?`, `text`, `options?` (max. 6)                           | Rote Markierung, bis du antwortest |
+| `status`   | `agentId`, `status` (idle/working/waiting/error/offline)                    | Status des Mitarbeiters (z. B. offline) |
 
-3. Was du im Terminal schreibst, wird an die `webhookUrl` des Agenten gePOSTet:
-   `{ agentId, kind: "message" | "answer", text, questionId, replyUrl }`.
+Ohne `taskId` landet die Meldung beim zuletzt aktiven Auftrag des Agenten.
+
+3. Was du im Terminal tust, wird an die `webhookUrl` des Agenten gePOSTet:
+   `{ agentId, taskId, kind: "task" | "message" | "answer" | "stop", text, instruction, questionId, replyUrl }`.
    Der Agent antwortet direkt mit `{ "reply": "..." }` oder später über `/api/agents/inbound`.
    Optional wird `AGENTS_OUTBOUND_TOKEN` als Bearer-Token mitgeschickt.
 
-Agenten können auch beim Start fest über `AGENTS_REGISTRY` (JSON) eingetragen werden, siehe `.env.example`.
+Mitarbeiter können auch beim Start fest über `AGENTS_REGISTRY` (JSON) eingetragen werden, siehe `.env.example`.
 
 ## Wichtig für den Zugriff von Laptop/PC/Handy
 

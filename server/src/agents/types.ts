@@ -1,4 +1,4 @@
-// Agenten-Terminal: shared types for the agent registry (Samantha + her team).
+// Agenten-Terminal: shared types for Samantha + her team and their tasks (Aufträge).
 
 export type AgentStatus = "idle" | "working" | "waiting" | "error" | "offline";
 
@@ -10,11 +10,27 @@ export interface Agent {
   isLead: boolean;
   status: AgentStatus;
   currentTask: string | null;
-  /** 0-100, null when the agent does not report progress. */
-  progress: number | null;
-  /** Where messages from the terminal are POSTed (n8n, own agent server, ...). Null = demo responder. */
+  /** Where tasks/messages from the terminal are POSTed (n8n, own agent server, ...). Null = demo responder. */
   webhookUrl: string | null;
+  avatarUrl: string | null;
   lastActivityAt: string;
+}
+
+export type TaskStatus = "running" | "waiting" | "done" | "stopped" | "failed";
+
+/** One Auftrag = one panel in the terminal. */
+export interface AgentTask {
+  id: string;
+  agentId: string;
+  title: string;
+  instruction: string;
+  status: TaskStatus;
+  stepCount: number;
+  currentStep: string | null;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
 }
 
 export type MessageSender = "user" | "agent" | "system";
@@ -22,6 +38,7 @@ export type MessageSender = "user" | "agent" | "system";
 export interface AgentMessage {
   id: string;
   agentId: string;
+  taskId: string;
   from: MessageSender;
   text: string;
   createdAt: string;
@@ -32,6 +49,7 @@ export interface AgentMessage {
 export interface AgentQuestion {
   id: string;
   agentId: string;
+  taskId: string;
   text: string;
   options: string[];
   status: "open" | "answered";
@@ -40,18 +58,10 @@ export interface AgentQuestion {
   answeredAt: string | null;
 }
 
-export interface ActivityEntry {
-  id: string;
-  agentId: string;
-  text: string;
-  level: "info" | "success" | "warn" | "error";
-  createdAt: string;
-}
-
 export interface AgentSnapshot {
   agents: Agent[];
+  tasks: AgentTask[];
   questions: AgentQuestion[];
-  activity: ActivityEntry[];
   demoMode: boolean;
 }
 
@@ -59,6 +69,6 @@ export interface AgentSnapshot {
 export type AgentEvent =
   | { type: "agent"; agent: Agent }
   | { type: "agentRemoved"; agentId: string }
+  | { type: "task"; task: AgentTask }
   | { type: "message"; message: AgentMessage }
-  | { type: "question"; question: AgentQuestion }
-  | { type: "activity"; entry: ActivityEntry };
+  | { type: "question"; question: AgentQuestion };
