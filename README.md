@@ -93,6 +93,13 @@ differenzierte Team-Zuweisungsregeln sind bewusst noch nicht
 implementiert, um Fehlversand ungeprüft zu vermeiden - das ist der
 naheliegende nächste Ausbauschritt.
 
+## Agenten-Terminal
+
+Live-Übersicht und Chat mit Samantha und allen Agenten unter `/terminal`
+(rote Leuchtumrandung bei offenen Fragen, mehrere Geräte gleichzeitig, als App
+installierbar). Anbindung echter Agenten (z. B. n8n) siehe
+[`docs/AGENTEN_TERMINAL.md`](docs/AGENTEN_TERMINAL.md).
+
 ## Bekannte Vereinfachungen
 
 - **Auth**: minimaler Header-basierter Benutzerwechsel (`x-user-id`,

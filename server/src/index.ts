@@ -15,6 +15,8 @@ import { consentRouter } from "./routes/consent";
 import { assistantRouter } from "./routes/assistant";
 import { mediaRouter } from "./routes/media";
 import { settingsRouter } from "./routes/settings";
+import { agentsRouter } from "./routes/agents";
+import { getAgentStore } from "./agents";
 import { registerAllJobHandlers } from "./jobs/handlers";
 import { startQueueWorker } from "./lib/queue";
 
@@ -46,10 +48,12 @@ app.use("/api/consent", consentRouter);
 app.use("/api/assistant", assistantRouter);
 app.use("/api/media", mediaRouter);
 app.use("/api/settings", settingsRouter);
+app.use("/api/agents", agentsRouter);
 
 app.use(errorHandler);
 
 registerAllJobHandlers();
+getAgentStore();
 startQueueWorker();
 
 app.listen(env.port, () => {
